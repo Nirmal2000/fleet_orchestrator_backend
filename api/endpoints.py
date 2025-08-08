@@ -302,7 +302,7 @@ class OrchestratorEndpoints:
                                                     # Connect to sandbox and get download URL
                                                     sandbox = self.sandbox_manager.active_sandboxes[sandbox_info.sandbox_id]['sandbox']
                                                     print(f"Downloading file {filepath} from sandbox {sandbox_info.sandbox_id}")
-                                                    signed_url = sandbox.download_url(path=filepath)
+                                                    signed_url = await sandbox.download_url(path=filepath)
                                                     # Replace the chunk with download URL
                                                     data['chunk'] = f"Download URL: {signed_url}"
                                                     processed_chunk += f"data: {json.dumps(data)}\n"
