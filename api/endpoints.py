@@ -300,19 +300,26 @@ class OrchestratorEndpoints:
                                             download_pattern = r'create_download_link\(([^)]+)\)'
                                             match = re.search(download_pattern, chunk_content)
                                             if match:
-                                                filepath = match.group(1)
+                                                filepath = match.group(1).strip('"\'')  # Remove quotes
                                                 try:
-                                                    # Connect to sandbox and get download URL
-                                                    # extract id from url - https://{port}-{id}.e2b.app
-                                                    sandbox_id = sandbox_url.split('-')[1].split('.')[0]
-                                                    print(f"Extracted sandbox ID: {sandbox_id}")
-                                                    sandbox = await AsyncSandbox.connect(sandbox_id, api_key=os.environ.get("E2B_API_KEY"))
-                                                    print(f"Connected to sandbox {sandbox_id} for download link")                                          
-                                                    print(f"Downloading file {filepath} from sandbox {sandbox_id}")
-                                                    signed_url = await sandbox.download_url(path=filepath)
-                                                    # Replace the chunk with download URL
-                                                    data['chunk'] = f"Download URL: {signed_url}"
-                                                    processed_chunk += f"data: {json.dumps(data)}\n"
+                                                    # Check if file is in /tmp/pw/ directory
+                                                    if filepath.startswith('/tmp/pw/'):
+                                                        # Extract filename from the full path
+                                                        filename = filepath.replace('/tmp/pw/', '')
+                                                        # Create FastAPI static file URL
+                                                        fastapi_url = f"{sandbox_url}/images/{filename}"
+                                                        data['chunk'] = f"Download URL: {fastapi_url}"
+                                                        processed_chunk += f"data: {json.dumps(data)}\n"
+                                                    else:
+                                                        # Fall back to original e2b signed URL for other paths
+                                                        sandbox_id = sandbox_url.split('-')[1].split('.')[0]
+                                                        print(f"Extracted sandbox ID: {sandbox_id}")
+                                                        sandbox = await AsyncSandbox.connect(sandbox_id, api_key=os.environ.get("E2B_API_KEY"))
+                                                        print(f"Connected to sandbox {sandbox_id} for download link")                                          
+                                                        print(f"Downloading file {filepath} from sandbox {sandbox_id}")
+                                                        signed_url = sandbox.download_url(path=filepath)
+                                                        data['chunk'] = f"Download URL: {signed_url}"
+                                                        processed_chunk += f"data: {json.dumps(data)}\n"
                                                 except Exception as e:
                                                     print(f"Error creating download link: {e}")
                                                     data['chunk'] = f"Error creating download link: {str(e)}"
