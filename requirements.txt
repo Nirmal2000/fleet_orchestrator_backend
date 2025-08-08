@@ -1,9 +1,6 @@
 # FastAPI and server dependencies
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-
-# HTTP client for proxying requests
-httpx<0.28.0
+fastapi
+uvicorn[standard]
 
 # E2B SDK for sandbox management
 e2b-code-interpreter
@@ -12,5 +9,9 @@ e2b-code-interpreter
 supabase
 
 # Environment and utilities
-python-dotenv>=1.0.0
-pydantic>=2.0.0
+httpx<0.28.0
+python-dotenv
+pydantic
+
+# Data and time handling
+datetime

@@ -3,6 +3,8 @@ from typing import Dict, Any, AsyncIterator, List
 import json
 import httpx
 import traceback
+import re
+from e2b_code_interpreter import Sandbox
 
 from core.sandbox_manager import SandboxManager
 from core.session_manager import SessionManager
@@ -278,19 +280,45 @@ class OrchestratorEndpoints:
 
                     assistant_content = ""
                     
-                    # Stream response from sandbox - direct passthrough
+                    # Stream response from sandbox - process chunks for download links
                     async for chunk in response.aiter_text():
                         if chunk.strip():
-                            # Extract content for saving while passing through
+                            # Extract content for saving while processing
+                            processed_chunk = ""
                             for line in chunk.split('\n'):
                                 if line.startswith('data: '):
                                     try:
                                         data = json.loads(line[6:])
                                         if 'chunk' in data:
-                                            assistant_content += data['chunk']
-                                    except:
-                                        pass
-                            yield chunk
+                                            chunk_content = data['chunk']
+                                            assistant_content += chunk_content
+                                            
+                                            # Check for create_download_link pattern
+                                            download_pattern = r'create_download_link\(([^)]+)\)'
+                                            match = re.search(download_pattern, chunk_content)
+                                            if match:
+                                                filepath = match.group(1)
+                                                try:
+                                                    # Connect to sandbox and get download URL
+                                                    sandbox = Sandbox.connect(sandbox_info.sandbox_id)
+                                                    signed_url = sandbox.download_url(path=filepath)
+                                                    # Replace the chunk with download URL
+                                                    data['chunk'] = f"Download URL: {signed_url}"
+                                                    processed_chunk += f"data: {json.dumps(data)}\n"
+                                                except Exception as e:
+                                                    print(f"Error creating download link: {e}")
+                                                    data['chunk'] = f"Error creating download link: {str(e)}"
+                                                    processed_chunk += f"data: {json.dumps(data)}\n"
+                                            else:
+                                                processed_chunk += line + "\n"
+                                        else:
+                                            processed_chunk += line + "\n"
+                                    except Exception as e:
+                                        print(f"Error processing chunk: {e}")
+                                        processed_chunk += line + "\n"
+                                else:
+                                    processed_chunk += line + "\n"
+                            yield processed_chunk if processed_chunk else chunk
 
                     # Save complete assistant response to database
                     if assistant_content.strip():
