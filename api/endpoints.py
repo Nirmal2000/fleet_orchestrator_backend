@@ -4,7 +4,7 @@ import json
 import httpx
 import traceback
 import re
-from e2b_code_interpreter import Sandbox
+from e2b_code_interpreter import AsyncSandbox
 
 from core.sandbox_manager import SandboxManager
 from core.session_manager import SessionManager
@@ -300,7 +300,7 @@ class OrchestratorEndpoints:
                                                 filepath = match.group(1)
                                                 try:
                                                     # Connect to sandbox and get download URL
-                                                    sandbox = self.sandbox_manager.active_sandboxes[sandbox_info.sandbox_id]
+                                                    sandbox = self.sandbox_manager.active_sandboxes[sandbox_info.sandbox_id][sandbox]
                                                     print(f"Downloading file {filepath} from sandbox {sandbox_info.sandbox_id}")
                                                     signed_url = sandbox.download_url(path=filepath)
                                                     # Replace the chunk with download URL
@@ -393,8 +393,11 @@ class OrchestratorEndpoints:
                                 created_at=datetime.now(timezone.utc).isoformat()
                             )
                             # Add to sandbox manager's in-memory tracking
+                            # Extract sandbox ID from URL pattern https://{port}-{id}.e2b.app
+                            sandbox_id = existing_sandbox_url.split('-')[1].split('.')[0]
+                            sandbox = await AsyncSandbox.connect(sandbox_id)
                             sandbox_info = {
-                                "sandbox": None,  # No actual sandbox object for reused ones
+                                "sandbox": sandbox,  # No actual sandbox object for reused ones
                                 "chat_id": chat_id,
                                 "user_id": user_id,
                                 "url": existing_sandbox_url,
