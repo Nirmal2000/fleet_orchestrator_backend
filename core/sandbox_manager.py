@@ -52,6 +52,7 @@ class SandboxManager:
             else:
                 # E2B mode - create actual sandbox
                 sandbox = await AsyncSandbox.create(self.template_id, envs=self.sandbox_envs, timeout=3000, api_key=self.sandbox_envs['E2B_API_KEY'])
+                await sandbox.commands.run("mkdir -p /tmp/pw", background=False)
                 await sandbox.commands.run("cd /app && nohup python main.py > /tmp/app.log 2>&1 &", background=True)
                 host = sandbox.get_host(3000)
                 sandbox_url = f"https://{host}"
