@@ -307,9 +307,8 @@ class OrchestratorEndpoints:
                                                     sandbox_id = sandbox_url.split('-')[1].split('.')[0]
                                                     print(f"Extracted sandbox ID: {sandbox_id}")
                                                     sandbox = await AsyncSandbox.connect(sandbox_id, api_key=os.environ.get("E2B_API_KEY"))
-                                                    print(f"Connected to sandbox {sandbox_id} for download link")                                                    
-                                                    print(f"Download URL: {signed_url}")
-                                                    print(f"Downloading file {filepath} from sandbox {sandbox_info.sandbox_id}")
+                                                    print(f"Connected to sandbox {sandbox_id} for download link")                                          
+                                                    print(f"Downloading file {filepath} from sandbox {sandbox_id}")
                                                     signed_url = await sandbox.download_url(path=filepath)
                                                     # Replace the chunk with download URL
                                                     data['chunk'] = f"Download URL: {signed_url}"
