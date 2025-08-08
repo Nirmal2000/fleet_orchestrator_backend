@@ -300,7 +300,7 @@ class OrchestratorEndpoints:
                                                 filepath = match.group(1)
                                                 try:
                                                     # Connect to sandbox and get download URL
-                                                    sandbox = sandbox_info.sandbox
+                                                    sandbox = self.sandbox_manager.active_sandboxes[sandbox_info.sandbox_id]
                                                     print(f"Downloading file {filepath} from sandbox {sandbox_info.sandbox_id}")
                                                     signed_url = sandbox.download_url(path=filepath)
                                                     # Replace the chunk with download URL
