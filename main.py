@@ -40,7 +40,7 @@ async def validate_session_token(authorization: Optional[str] = Header(None)) ->
 
     try:
         jwt_response = descope_client.validate_session(session_token=session_token)
-
+        print(jwt_response.get("claims", {}).get("scope", "").split())
         # Extract user_id from 'sub' field
         user_id = jwt_response.get("sub")
         if not user_id:
@@ -99,7 +99,7 @@ async def create_sandbox(
     request: CreateSandboxRequest,
     auth_data: Dict[str, Any] = Depends(validate_session_token)
 ):
-    """Create a new sandbox for a chat session"""
+    """Create a new sandbox for a chat session"""    
     if not endpoints:
         raise HTTPException(status_code=500, detail="Service not initialized")
     return await endpoints.create_sandbox(request, auth_data)
@@ -163,7 +163,7 @@ async def chat_stream_endpoint(
 
     # Extract data from request body
     message = request.get("message")
-
+    print("DEI",auth_data['token_data']['roles'])
     return StreamingResponse(
         endpoints.chat_stream(chat_id, message, auth_data),
         media_type="text/event-stream",
@@ -174,7 +174,7 @@ async def chat_stream_endpoint(
 async def connect_chat(
     request: dict,
     auth_data: Dict[str, Any] = Depends(validate_session_token)
-):
+):    
     """Connect to a chat - handles both new and existing chats"""
     if not endpoints:
         raise HTTPException(status_code=500, detail="Service not initialized")
@@ -285,14 +285,13 @@ async def toggle_mcp_for_chat(
     if not endpoints:
         raise HTTPException(status_code=500, detail="Service not initialized")
 
-    mcp_name = request.get("mcp_name")
+    mcp_id = request.get("mcp_id")
     enabled = request.get("enabled")
-    config = request.get("config")
 
-    if not mcp_name or enabled is None:
-        raise HTTPException(status_code=400, detail="Missing required fields: mcp_name, enabled")
+    if not mcp_id or enabled is None:
+        raise HTTPException(status_code=400, detail="Missing required fields: mcp_id, enabled")
 
-    return await endpoints.toggle_mcp_for_chat(chat_id, mcp_name, enabled, config, auth_data)
+    return await endpoints.toggle_mcp_for_chat(chat_id, mcp_id, enabled, auth_data=auth_data)
 
 @app.post("/sandbox-status")
 async def check_sandbox_status(
@@ -364,6 +363,16 @@ async def update_mcp_tool_roles(
         raise HTTPException(status_code=500, detail="Service not initialized")
     role_map = request.get('roles') or {}
     return await endpoints.update_mcp_tool_roles(mcp_id, role_map, auth_data)
+
+@app.post("/membership/set-role")
+async def set_membership_role(
+    request: dict,
+    auth_data: Dict[str, Any] = Depends(validate_session_token)
+):
+    if not endpoints:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+    desired_role = (request or {}).get('role')
+    return await endpoints.set_user_membership_role(desired_role, auth_data)
 
 if __name__ == "__main__":
     import uvicorn
