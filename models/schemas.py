@@ -20,7 +20,6 @@ class MCPConfig(BaseModel):
 
 class CreateSandboxRequest(BaseModel):
     chat_id: str
-    user_id: str
     chat_history: List[ChatMessage] = []
     enabled_mcps: List[Dict[str, Any]] = []  # List of {name: str, config: MCPConfig}
 
@@ -40,15 +39,7 @@ class ChatSessionData(BaseModel):
     last_activity: str
     sandbox_url: Optional[str] = None
 
-class ForceConnectRequest(BaseModel):
-    chat_id: str
-    user_id: str
-    device_id: str
-
-class SessionConflictResponse(BaseModel):
-    conflict: bool
-    current_device: Optional[str] = None
-    message: str
+# Deprecated models related to device-level session control have been removed
 
 class APIResponse(BaseModel):
     success: bool

@@ -34,6 +34,8 @@ class SandboxManager:
             'SUPABASE_PROJECT_URL': os.environ.get("SUPABASE_PROJECT_URL", ""),
             'SUPABASE_KEY': os.environ.get("SUPABASE_KEY", ""),
             'SUPABASE_SCHEMA': os.environ.get("SUPABASE_SCHEMA", "fleet_db"),
+            'BROWSERBASE_PROJECT_ID': os.environ.get("BROWSERBASE_PROJECT_ID"),
+            'BROWSERBASE_API_KEY': os.environ.get("BROWSERBASE_API_KEY")
         }
 
     async def create_sandbox(self, chat_id: str, user_id: str) -> SandboxResponse:
@@ -52,7 +54,7 @@ class SandboxManager:
             else:
                 # E2B mode - create actual sandbox
                 sandbox = await AsyncSandbox.create(self.template_id, envs=self.sandbox_envs, timeout=3000, api_key=self.sandbox_envs['E2B_API_KEY'])
-                await sandbox.commands.run("mkdir -p /tmp/pw", background=False)
+                await sandbox.commands.run("mkdir -p /tmp", background=False)
                 await sandbox.commands.run("cd /app && nohup python main.py > /tmp/app.log 2>&1 &", background=True)
                 host = sandbox.get_host(3000)
                 sandbox_url = f"https://{host}"
@@ -217,7 +219,7 @@ class SandboxManager:
                     },
                     headers={"Content-Type": "application/json"}
                 )
-                
+                print("DEI",sandbox_url)
                 if response.status_code == 200:
                     print(f"Successfully initialized chatbot for chat {chat_id}")
                 else:

@@ -8,10 +8,17 @@ e2b-code-interpreter
 # Supabase client for database operations
 supabase
 
+# JWT for authentication
+PyJWT
+
 # Environment and utilities
 httpx<0.28.0
 python-dotenv
 pydantic
+requests
 
 # Data and time handling
 datetime
+
+# Descope authentication
+descope
