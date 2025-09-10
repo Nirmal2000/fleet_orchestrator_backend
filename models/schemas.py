@@ -11,7 +11,13 @@ class SandboxStatus(str, Enum):
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    # Text content for user/assistant messages or tool output
+    content: Optional[str] = None
+    # OR-format tool linkage
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None  # tool name for role='tool'
+    # Assistant tool calls (when assistant triggers tools)
+    tool_calls: Optional[List[Dict[str, Any]]] = None
 
 class MCPConfig(BaseModel):
     command: str

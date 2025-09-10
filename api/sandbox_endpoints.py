@@ -3,6 +3,8 @@ import json
 import httpx
 import traceback
 import asyncio
+import re
+import os
 from e2b_code_interpreter import AsyncSandbox
 
 from core.sandbox_manager import SandboxManager
@@ -145,17 +147,133 @@ class SandboxEndpoints:
                     if response.status_code != 200:
                         yield f"data: {json.dumps({'error': f'Sandbox error: {response.status_code}'})}\n\n"
                         return
+                    assistant_content = ""
                     async for line in response.aiter_lines():
                         if not line:
                             continue
                         # Pass through SSE data lines without double-prefixing
                         if line.startswith("data: "):
+                            # Try to parse JSON to accumulate assistant content chunks and handle tool events
+                            payload = line[len("data: "):]
+                            try:
+                                data = json.loads(payload)
+                                if isinstance(data, dict):
+                                    if data.get("type") == "content":
+                                        assistant_content += data.get("content", "")
+                                        # Forward as JSON to keep consistency
+                                        yield f"data: {json.dumps(data)}\n\n"
+                                        continue
+                                    if data.get("type") == "assistant_message":
+                                        # Persist the assistant message that includes tool_calls (OR-format)
+                                        try:
+                                            msg = data.get("message") or {}
+                                            # Store exactly as provided
+                                            assistant_msg = ChatMessage(**msg)
+                                            await self.db_manager.save_chat_message(chat_id, user_id, assistant_msg)
+                                        except Exception:
+                                            pass
+                                        # Forward downstream
+                                        yield f"data: {json.dumps(data)}\n\n"
+                                        continue
+                                    if data.get("type") == "tool":
+                                        # Before persisting any tool message, flush any accumulated assistant text
+                                        if assistant_content.strip():
+                                            try:
+                                                assistant_message = ChatMessage(role="assistant", content=assistant_content.strip())
+                                                await self.db_manager.save_chat_message(chat_id, user_id, assistant_message)
+                                            except Exception:
+                                                pass
+                                            finally:
+                                                assistant_content = ""
+                                        # If final tool output, normalize links
+                                        if data.get("state") == "output-available":
+                                            tool_output = data.get("output") or {}
+                                            tool_result = tool_output.get("result", "")
+                                            try:
+                                                # Handle create_download_link(path) -> actual URL
+                                                if 'create_download_link(' in str(tool_result):
+                                                    filepath_match = re.search(r'create_download_link\(([^)]+)\)', str(tool_result))
+                                                    if filepath_match:
+                                                        filepath = filepath_match.group(1).strip('\"\'')
+                                                        try:
+                                                            if filepath.startswith('/tmp/nirmal/'):
+                                                                filename = filepath.replace('/tmp/nirmal/', '')
+                                                                actual_url = f"{sandbox_url}/images/{filename}"
+                                                            else:
+                                                                sandbox_id = sandbox_url.split('-')[1].split('.')[0]
+                                                                sandbox = await AsyncSandbox.connect(sandbox_id, api_key=os.environ.get("E2B_API_KEY"))
+                                                                actual_url = sandbox.download_url(path=filepath)
+                                                            data['output']['result'] = actual_url
+                                                        except Exception as e:
+                                                            data['output']['result'] = f"Error creating download link: {str(e)}"
+                                                # Handle get_live_url(url) -> direct URL
+                                                elif 'get_live_url(' in str(tool_result):
+                                                    url_match = re.search(r'get_live_url\(([^)]+)\)', str(tool_result))
+                                                    if url_match:
+                                                        live_url = url_match.group(1).strip('\"\'')
+                                                        data['output']['result'] = live_url
+                                            except Exception:
+                                                # Continue without modification on any error
+                                                pass
+
+                                            # Persist tool message in DB in OR format
+                                            try:
+                                                # Prefer full content if provided by backend; fallback to result preview
+                                                full_content = data.get("content")
+                                                if isinstance(full_content, str) and 'create_download_link(' in full_content:
+                                                    # Apply same link normalization to full content
+                                                    filepath_match = re.search(r'create_download_link\(([^)]+)\)', full_content)
+                                                    if filepath_match:
+                                                        filepath = filepath_match.group(1).strip('\"\'')
+                                                        try:
+                                                            if filepath.startswith('/tmp/nirmal/'):
+                                                                filename = filepath.replace('/tmp/nirmal/', '')
+                                                                full_content = f"{sandbox_url}/images/{filename}"
+                                                            else:
+                                                                sandbox_id = sandbox_url.split('-')[1].split('.')[0]
+                                                                sandbox = await AsyncSandbox.connect(sandbox_id, api_key=os.environ.get("E2B_API_KEY"))
+                                                                full_content = sandbox.download_url(path=filepath)
+                                                        except Exception:
+                                                            pass
+                                                elif isinstance(full_content, str) and 'get_live_url(' in full_content:
+                                                    url_match = re.search(r'get_live_url\(([^)]+)\)', full_content)
+                                                    if url_match:
+                                                        full_content = url_match.group(1).strip('\"\'')
+
+                                                tool_message = ChatMessage(
+                                                    role="tool",
+                                                    tool_call_id=data.get("tool_call_id"),
+                                                    name=(data.get("name") or data.get("tool_name")),
+                                                    content=(full_content or (tool_output.get("result") if isinstance(tool_output, dict) else None))
+                                                )
+                                                await self.db_manager.save_chat_message(chat_id, user_id, tool_message)
+                                            except Exception:
+                                                pass
+                                        # Forward (possibly modified) JSON tool event
+                                        yield f"data: {json.dumps(data)}\n\n"
+                                        continue
+
+                                    # Flush assistant content when we hit a done marker (end of full stream)
+                                    if data.get("done") is True and assistant_content.strip():
+                                        try:
+                                            assistant_message = ChatMessage(role="assistant", content=assistant_content.strip())
+                                            await self.db_manager.save_chat_message(chat_id, user_id, assistant_message)
+                                        except Exception:
+                                            pass
+                                        finally:
+                                            assistant_content = ""
+                            except Exception:
+                                # Ignore non-JSON payloads for accumulation; fall back to raw forwarding
+                                pass
+                            # Forward raw line as-is if not handled above
                             yield f"{line}\n\n"
                         else:
                             yield f"data: {line}\n\n"
 
-            assistant_message = ChatMessage(role="assistant", content="[streamed]")
-            await self.db_manager.save_chat_message(chat_id, user_id, assistant_message)
+            # Persist full assistant message content after stream ends
+            if assistant_content.strip():
+                assistant_message = ChatMessage(role="assistant", content=assistant_content.strip())
+                await self.db_manager.save_chat_message(chat_id, user_id, assistant_message)
 
         except Exception as e:
             print(traceback.format_exc())
