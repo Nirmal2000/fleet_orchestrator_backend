@@ -39,8 +39,7 @@ async def validate_session_token(authorization: Optional[str] = Header(None)) ->
             detail="Authorization header missing or invalid"
         )
 
-    session_token = authorization.split(" ")[1]
-
+    session_token = authorization.split(" ")[1]    
     try:
         jwt_response = descope_client.validate_session(session_token=session_token)
         print(jwt_response.get("claims", {}).get("scope", "").split())
@@ -169,8 +168,7 @@ async def chat_stream_endpoint(
         raise HTTPException(status_code=500, detail="Service not initialized")
 
     # Extract data from request body
-    message = request.get("message")
-    print("DEI",auth_data['token_data']['roles'])
+    message = request.get("message")    
     return StreamingResponse(
         endpoints.chat_stream(chat_id, message, auth_data),
         media_type="text/event-stream",

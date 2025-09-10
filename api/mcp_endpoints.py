@@ -135,15 +135,23 @@ class MCPEndpoints:
                     data = resp.json()
 
                 env_with_values = all_env if all_env else {}
+                tools_list = data.get("tools") or []
+                tool_roles = {}
+                for t in tools_list:
+                    tname = (t or {}).get('name')
+                    if tname:
+                        tool_roles[tname] = "premium"  # default role
+
                 config = {
                     "command": (payload.get("mcpCommand") or "").replace("{path}", PATH_ROOT),
                     "args": [(a or "").replace("{path}", PATH_ROOT) for a in (payload.get("mcpArgs") or [])],
                     "env": env_with_values,
-                    "tools": data.get("tools") or [],
+                    "tools": tools_list,
                     "mcp_env_names": mcp_env_names,
                     "metadata": {
                         "visibility": ("private" if payload.get("isPrivate") else "public"),
                         "general_env_names": [k for k in env_with_values.keys() if k not in set(mcp_env_names)],
+                        "tool_roles": tool_roles,
                     },
                 }
                 title = payload.get("name") or (data.get("server_info", {}) or {}).get("name") or payload.get("mcpCommand")
@@ -272,7 +280,7 @@ class MCPEndpoints:
         try:
             dapi = DescopeAPI()
             roles = await asyncio.get_event_loop().run_in_executor(None, dapi.list_roles)
-            return {"success": True, "roles": roles}
+            return {"success": True, "roles": [r for r in roles if r.get("name")!='Tenant Admin' ]}
         except Exception as e:
             return {"success": False, "message": f"Failed to list roles: {e}"}
 
@@ -620,7 +628,7 @@ class MCPEndpoints:
                         pass
                     return {"success": False, "message": f"Sandbox toggle failed: {response.status_code}", "body": body}
 
-            # Update session enabled MCPs as a mapping {mcp_id: mcp_id}
+            print(f"MCP {mcp_id} {'enabled' if enabled else 'disabled'} in sandbox for chat {chat_id}")
             session_data = await self.db_manager.load_chat_session(chat_id, user_id)
             if session_data:
                 current = session_data.enabled_mcps if session_data.enabled_mcps is not None else {}
@@ -639,7 +647,7 @@ class MCPEndpoints:
                     enabled_mcps_map.pop(mcp_id, None)
 
                 await self.db_manager.save_chat_session(chat_id, user_id, enabled_mcps_map)
-
+            print(f"Updated session enabled_mcps: {session_data} -> {enabled_mcps_map if session_data else 'N/A'}")
             await self.sandbox_manager.update_activity(chat_id)
             self.session_manager.update_activity(chat_id)
             await self.db_manager.update_session_activity(chat_id, user_id)
