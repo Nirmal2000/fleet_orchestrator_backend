@@ -136,7 +136,7 @@ class DescopeAPI:
         payload = {
             "name": name,
             "description": description or name,
-            "approvedCallbackUrls": callback_urls,
+            "approvedCallbackUrls": callback_urls+['https://fleet-frontend-55yk.onrender.com/auth/inbound/callback'],
             "permissionsScopes": permissions_scopes or [],
         }
         r = requests.post(f"{self.base}/v1/mgmt/thirdparty/app/create", headers=self._headers(), json=payload, timeout=timeout)
