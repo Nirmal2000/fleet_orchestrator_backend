@@ -21,6 +21,10 @@ class OrchestratorEndpoints:
         self.list_descope_roles = self.mcp.list_descope_roles
         self.update_mcp_tool_roles = self.mcp.update_mcp_tool_roles
         self.get_task_status = self.mcp.get_task_status
+        self.list_outbound_apps = self.mcp.list_outbound_apps
+        self.latest_outbound_token = self.mcp.latest_outbound_token
+        self.is_outbound_connected = self.mcp.is_outbound_connected
+        self.toggle_gmail_integration = self.mcp.toggle_gmail_integration
 
         self.create_sandbox = self.sandbox.create_sandbox
         self.get_sandbox_info = self.sandbox.get_sandbox_info

@@ -79,6 +79,37 @@ class DescopeAPI:
         merged = list(by_name.values())
         return self.patch_app_scopes(merged, timeout=timeout)
 
+    # list_outbound_apps removed — use Descope SDK directly in endpoint layer
+
+    def get_latest_outbound_token(
+        self,
+        app_id: str,
+        user_id: str,
+        tenant_id: Optional[str] = None,
+        with_refresh: bool = True,
+        force_refresh: bool = False,
+        timeout: int = 15,
+    ) -> Dict[str, Any]:
+        """
+        Fetch the latest outbound app token for a user via management API.
+        Mirrors docs sample: POST /v1/mgmt/outbound/app/user/token/latest
+        """
+        url = f"{self.base}/v1/mgmt/outbound/app/user/token/latest"
+        payload: Dict[str, Any] = {
+            "appId": app_id,
+            "userId": user_id,
+            "options": {
+                "withRefreshToken": bool(with_refresh),
+                "forceRefresh": bool(force_refresh),
+            },
+        }
+        if tenant_id:
+            payload["tenantId"] = tenant_id
+        r = requests.post(url, headers=self._headers(), json=payload, timeout=timeout)
+        r.raise_for_status()
+        print("Descope outbound token response:", r.json())
+        return r.json() or {}
+
     @staticmethod
     def sanitize_component(value: str) -> str:
         if not value:

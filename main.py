@@ -374,6 +374,36 @@ async def set_membership_role(
     desired_role = (request or {}).get('role')
     return await endpoints.set_user_membership_role(desired_role, auth_data)
 
+# ---------------- Outbound Apps ----------------
+
+@app.get("/outbound-apps")
+async def list_outbound_apps(
+    auth_data: Dict[str, Any] = Depends(validate_session_token)
+):
+    if not endpoints:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+    print("Listing outbound apps for user:", auth_data.get("user_id"))
+    return await endpoints.list_outbound_apps(auth_data)
+
+@app.get("/outbound-apps/{app_id}/connected")
+async def is_outbound_connected(app_id: str, tenant_id: Optional[str] = None, auth_data: Dict[str, Any] = Depends(validate_session_token)):
+    if not endpoints:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+    return await endpoints.is_outbound_connected(app_id, tenant_id, auth_data)
+
+# ---------------- Gmail Integration ----------------
+
+@app.post("/chat/{chat_id}/integrations/gmail/toggle")
+async def toggle_gmail_integration(chat_id: str, request: dict, auth_data: Dict[str, Any] = Depends(validate_session_token)):
+    if not endpoints:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+    app_id = (request or {}).get("app_id")
+    tenant_id = (request or {}).get("tenant_id")
+    enabled = bool((request or {}).get("enabled"))
+    if enabled and not app_id:
+        raise HTTPException(status_code=400, detail="Missing required field: app_id")
+    return await endpoints.toggle_gmail_integration(chat_id, app_id, tenant_id, enabled, auth_data)
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))

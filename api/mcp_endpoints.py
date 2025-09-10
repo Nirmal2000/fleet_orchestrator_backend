@@ -4,6 +4,8 @@ import json
 import httpx
 import traceback
 from e2b_code_interpreter import AsyncSandbox
+import os
+from descope import DescopeClient
 
 from core.sandbox_manager import SandboxManager
 from core.session_manager import SessionManager
@@ -206,6 +208,59 @@ class MCPEndpoints:
         asyncio.create_task(runner())
         return {"success": True, "task_id": task_id}
 
+    async def list_outbound_apps(self, auth_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Return list of outbound apps using Descope Python SDK (management key required)."""
+        try:
+            project_id = os.environ.get("DESCOPE_PROJECT_ID")
+            mgmt_key = os.environ.get("DESCOPE_MANAGEMENT_KEY") or os.environ.get("DESCOPE_MGMT_KEY")
+            if not project_id or not mgmt_key:
+                return {"success": False, "message": "Descope management not configured"}
+
+            def _load_all():
+                client = DescopeClient(project_id=project_id, management_key=mgmt_key)
+                return client.mgmt.outbound_application.load_all_applications()
+
+            body = await asyncio.get_event_loop().run_in_executor(None, _load_all)
+            apps = (body or {}).get("apps") or []
+            return {"success": True, "apps": apps, "raw": body}
+        except Exception as e:
+            return {"success": False, "message": f"Failed to list outbound apps: {e}"}
+
+    async def latest_outbound_token(self, app_id: str, tenant_id: str, auth_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the latest outbound token for the current user and app."""
+        try:
+            user_id = auth_data.get("user_id")
+            if not user_id:
+                return {"success": False, "message": "Missing user_id"}
+            dapi = DescopeAPI()
+            body = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: dapi.get_latest_outbound_token(app_id, user_id, tenant_id=tenant_id or None)
+            )
+            token = (body or {}).get("token") or {}
+            return {"success": True, "token": token, "raw": body}
+        except Exception as e:
+            return {"success": False, "message": f"Failed to fetch latest token: {e}"}
+
+    async def is_outbound_connected(self, app_id: str, tenant_id: str, auth_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Return boolean indicating whether user has a stored token for the app.
+
+        Does NOT return tokens or sensitive data, only a boolean flag.
+        """
+        try:
+            user_id = auth_data.get("user_id")
+            if not user_id:
+                return {"success": False, "connected": False, "message": "Missing user_id"}
+            dapi = DescopeAPI()
+            body = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: dapi.get_latest_outbound_token(app_id, user_id, tenant_id=tenant_id or None)
+            )
+            token = (body or {}).get("token") or {}
+            connected = bool(token.get("accessToken"))
+            return {"success": True, "connected": connected}
+        except Exception:
+            # Any error treated as not connected (no token stored)
+            return {"success": True, "connected": False}
+
     async def list_descope_roles(self, auth_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             dapi = DescopeAPI()
@@ -263,6 +318,74 @@ class MCPEndpoints:
         except Exception as e:
             print(f"Error updating tool roles for MCP {mcp_id}: {e}")
             return {"success": False, "message": f"Error updating tool roles: {str(e)}"}
+
+    async def toggle_gmail_integration(self, chat_id: str, app_id: str, tenant_id: str, enabled: bool, auth_data: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            user_id = auth_data.get("user_id")
+            if not user_id:
+                return {"success": False, "message": "Missing user_id"}
+
+            # Find sandbox for chat
+            sandbox_info = await self.sandbox_manager.get_sandbox_info(chat_id)
+            if not sandbox_info or not sandbox_info.url:
+                return {"success": False, "message": "No active sandbox found"}
+
+            sandbox_url = sandbox_info.url
+
+            # If disabling, just forward to chatbot
+            if not enabled:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(
+                        f"{sandbox_url}/integrations/gmail/toggle",
+                        json={"enabled": False},
+                        headers={"Content-Type": "application/json"},
+                    )
+                return {"success": resp.status_code == 200, "status": resp.status_code}
+
+            # Enabled case: fetch latest token and build credentials payload
+            dapi = DescopeAPI()
+            body = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: dapi.get_latest_outbound_token(app_id, user_id, tenant_id=tenant_id or None)
+            )
+            token = (body or {}).get("token") or {}
+            access_token = token.get("accessToken")
+            refresh_token = token.get("refreshToken") or token.get("refresh_token")
+            scopes = token.get("scopes") or []
+
+            if not access_token:
+                return {"success": False, "message": "No access token available for user/app"}
+
+            client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+            client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+            if not client_id or not client_secret:
+                return {"success": False, "message": "Missing GOOGLE_OAUTH_CLIENT_ID/SECRET"}
+
+            creds_payload = {
+                "token": access_token,
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "scopes": scopes or ["https://mail.google.com/"],
+            }
+
+            # Forward to chatbot to register tools
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    f"{sandbox_url}/integrations/gmail/toggle",
+                    json={"enabled": True, "credentials": creds_payload},
+                    headers={"Content-Type": "application/json"},
+                )
+            if resp.status_code != 200:
+                try:
+                    return {"success": False, "message": f"Chatbot rejected: {resp.status_code}", "body": resp.text}
+                except Exception:
+                    return {"success": False, "message": f"Chatbot rejected: {resp.status_code}"}
+
+            return {"success": True}
+        except Exception as e:
+            print(f"Error toggling Gmail integration: {e}")
+            return {"success": False, "message": f"Error toggling Gmail integration: {str(e)}"}
 
     async def get_task_status(self, task_id: str) -> Dict[str, Any]:
         task = await self.db_manager.get_task(task_id)
