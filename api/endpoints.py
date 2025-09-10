@@ -38,6 +38,7 @@ class OrchestratorEndpoints:
         self.health_check = self.sandbox.health_check
 
         self.get_mcps = self.mcp.get_mcps
+        self.get_inbound_config = self.mcp.get_inbound_config
         self.update_mcp_general_env = self.mcp.update_mcp_general_env
         self.update_mcp_visibility = self.mcp.update_mcp_visibility
         self.get_client_mcp = self.mcp.get_client_mcp

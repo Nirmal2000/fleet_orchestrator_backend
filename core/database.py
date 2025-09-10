@@ -421,3 +421,36 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error fetching client_mcp for user {user_id}, mcp {mcp_id}: {e}")
             return None
+
+    async def save_client_mcp_access_token(self, user_id: str, mcp_id: str, access_token: str) -> Optional[Dict[str, Any]]:
+        """Persist inbound access_token for a user+MCP. Requires column client_mcps.access_token."""
+        try:
+            sc = self._get_authenticated_client(user_id).schema(self.schema)
+            payload = {
+                "user_id": user_id,
+                "mcp_id": mcp_id,
+                "access_token": access_token,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            res = sc.table("client_mcps").upsert(payload, on_conflict="user_id,mcp_id").execute()
+            return res.data[0] if res.data else None
+        except Exception as e:
+            print(f"Error saving inbound access token for user {user_id}, mcp {mcp_id}: {e}")
+            return None
+
+    async def find_mcp_by_client_id(self, client_id: str) -> Optional[Dict[str, Any]]:
+        """Find MCP row whose config.metadata.inbound_app.clientId == client_id. Fallback client-side filtering."""
+        try:
+            sc = self.client.schema(self.schema)
+            # Fetch minimal fields and filter in Python for portability
+            res = sc.table("mcps").select("id, name, config").execute()
+            for row in (res.data or []):
+                cfg = (row or {}).get("config") or {}
+                meta = (cfg.get("metadata") or {})
+                inbound = (meta.get("inbound_app") or {})
+                if (inbound.get("clientId") or "") == client_id:
+                    return row
+            return None
+        except Exception as e:
+            print(f"Error finding MCP by clientId: {e}")
+            return None

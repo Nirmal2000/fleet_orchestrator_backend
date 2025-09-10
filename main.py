@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from typing import Optional, List, Dict, Any
 import os
+import httpx
+import jwt
 
 from descope import DescopeClient, AuthException
 
@@ -14,6 +16,7 @@ from models.schemas import (
     CreateSandboxRequest,
     APIResponse
 )
+import traceback
 
 # Initialize Descope client
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID")
@@ -77,6 +80,10 @@ sandbox_manager = None
 session_manager = None
 db_manager = None
 endpoints = None
+
+# Inbound App OAuth config
+DESCOPE_BASE_URL = os.environ.get("DESCOPE_BASE_URL", os.environ.get("BASE", "https://api.descope.com"))
+INBOUND_ACCESS_COOKIE = os.environ.get("INBOUND_ACCESS_COOKIE_NAME", "inbound_access_token")
 
 @app.on_event("startup")
 async def startup_event():
@@ -204,6 +211,12 @@ async def get_mcps():
     
     return await endpoints.get_mcps()
 
+@app.get("/mcps/{mcp_id}/inbound-config")
+async def get_mcp_inbound_config(mcp_id: str):
+    if not endpoints:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+    return await endpoints.get_inbound_config(mcp_id)
+
 @app.get("/client-mcps/{mcp_id}")
 async def get_client_mcp(
     mcp_id: str,
@@ -279,6 +292,7 @@ async def delete_mcp(mcp_id: str):
 async def toggle_mcp_for_chat(
     chat_id: str,
     request: dict,
+    http_request: Request,
     auth_data: Dict[str, Any] = Depends(validate_session_token)
 ):
     """Toggle MCP for a chat session and update session table"""
@@ -287,9 +301,28 @@ async def toggle_mcp_for_chat(
 
     mcp_id = request.get("mcp_id")
     enabled = request.get("enabled")
-
+    print("Toggle MCP Request:", request)
     if not mcp_id or enabled is None:
         raise HTTPException(status_code=400, detail="Missing required fields: mcp_id, enabled")
+
+    # If enabling an MCP and no inbound token stored, instruct client to run inbound flow
+    try:
+        if enabled:
+            user_id = auth_data.get("user_id")
+            client_row = await db_manager.get_client_mcp(user_id, mcp_id)
+            if not client_row or not client_row.get("access_token"):
+                return {
+                    "success": False,
+                    "inbound_required": True,
+                    "message": "Inbound app authorization required"
+                }
+    except Exception:
+        if enabled:
+            return {
+                "success": False,
+                "inbound_required": True,
+                "message": "Inbound app authorization required"
+            }
 
     return await endpoints.toggle_mcp_for_chat(chat_id, mcp_id, enabled, auth_data=auth_data)
 
@@ -381,8 +414,7 @@ async def list_outbound_apps(
     auth_data: Dict[str, Any] = Depends(validate_session_token)
 ):
     if not endpoints:
-        raise HTTPException(status_code=500, detail="Service not initialized")
-    print("Listing outbound apps for user:", auth_data.get("user_id"))
+        raise HTTPException(status_code=500, detail="Service not initialized")    
     return await endpoints.list_outbound_apps(auth_data)
 
 @app.get("/outbound-apps/{app_id}/connected")
@@ -408,3 +440,86 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+# --------------- Inbound App OAuth (Callback only) ---------------
+
+@app.post("/inbound/callback")
+async def inbound_callback(payload: dict, auth_data: Dict[str, Any] = Depends(validate_session_token)) -> Response:
+    """
+    Exchange authorization code for tokens and set httpOnly access cookie.
+    Note: Refresh handling intentionally omitted per current requirements.
+    """
+    print("Inbound callback payload:", payload)
+    code = (payload or {}).get("code")
+    code_verifier = (payload or {}).get("code_verifier")
+    redirect_uri = (payload or {}).get("redirect_uri")
+    clientId = (payload or {}).get("client_id")
+    mcpId = (payload or {}).get("mcp_id")
+    if not code or not code_verifier or not redirect_uri:
+        raise HTTPException(status_code=400, detail="code, code_verifier, redirect_uri required")
+
+    form = {
+        "grant_type": "authorization_code",
+        "client_id": clientId,
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(
+            f"{DESCOPE_BASE_URL}/oauth2/v1/apps/token",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+            data=form,
+        )
+    body = None
+    try:
+        body = r.json()
+    except Exception:
+        body = {"raw": r.text}
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail={"message": "token exchange failed", "body": body})
+
+    access_token = body.get("access_token")
+    print("Inbound token response:", body)
+    if not access_token:
+        raise HTTPException(status_code=502, detail="No access_token in response")
+
+    # Auth dependency gives us the user id
+    resolved_user_id = auth_data.get("user_id")
+    if not resolved_user_id:
+        raise HTTPException(status_code=401, detail="Unable to resolve user identity")
+
+    # Map clientId -> mcp_id and persist access_token
+    try:
+        if mcpId:
+            mcp_row = await db_manager.get_mcp_by_id(mcpId)
+        elif clientId:
+            mcp_row = await db_manager.find_mcp_by_client_id(clientId)
+        else:
+            raise HTTPException(status_code=400, detail="clientId or mcpId required")
+        if not mcp_row:
+            raise HTTPException(status_code=404, detail="MCP not found for clientId")
+        mcp_id = mcp_row.get("id")
+        await db_manager.save_client_mcp_access_token(resolved_user_id, mcp_id, access_token)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("Failed to persist inbound token:", e)
+        raise HTTPException(status_code=500, detail="Failed to persist inbound token")
+
+    # Also set short-lived cookie for compatibility
+    resp = Response(status_code=204)
+    try:
+        resp.set_cookie(
+            key=INBOUND_ACCESS_COOKIE,
+            value=access_token,
+            httponly=True,
+            secure=True,
+            samesite="Lax",
+            path="/",
+            max_age=int(body.get("expires_in") or 3600),
+        )
+    except Exception:
+        pass
+    return resp

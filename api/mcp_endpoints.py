@@ -6,6 +6,7 @@ import traceback
 from e2b_code_interpreter import AsyncSandbox
 import os
 from descope import DescopeClient
+import jwt
 
 from core.sandbox_manager import SandboxManager
 from core.session_manager import SessionManager
@@ -149,38 +150,44 @@ class MCPEndpoints:
                 description = data.get("description") or f"MCP: {title}"
 
                 try:
+                    # Create a dedicated inbound OAuth app (DCR) per MCP and store its credentials
                     tools_list = data.get("tools") or []
-                    user_id = auth_data.get("user_id")
-                    mcp_name = payload.get("name") or payload.get("mcpCommand") or title
-                    tool_roles = {}
-                    descope_scopes = {}
-                    if tools_list and user_id:
+                    meta = config.get("metadata") or {}
+                    inbound_existing = meta.get("inbound_app")
+                    if not inbound_existing:
                         dapi = DescopeAPI()
-                        scopes_payload = []
+                        # Build permissions scopes: always include full_access, plus one per tool
+                        scopes_payload = [{
+                            "name": "full_access",
+                            "description": "full access",
+                            "optional": True,
+                            "values": ["premium"],
+                        }]
                         for t in tools_list:
-                            tname = (t or {}).get("name") or "tool"
+                            tname = (t or {}).get("name")
+                            if not tname:
+                                continue
                             desc = (t or {}).get("description") or f"Scope for {tname}"
-                            scope_name = DescopeAPI.build_scope_name(user_id, mcp_name, tname)
-                            descope_scopes[tname] = scope_name
-                            tool_roles[tname] = "premium"
                             scopes_payload.append({
-                                "name": scope_name,
+                                "name": tname,
                                 "description": desc,
-                                "optional": False,
+                                "optional": True,
                                 "values": ["premium"],
                             })
-                        try:
-                            await asyncio.get_event_loop().run_in_executor(None, lambda: dapi.ensure_scopes(scopes_payload))
-                        except Exception as de:
-                            print(f"Warning: failed to patch Descope scopes: {de}")
-                    meta = config.get("metadata") or {}
-                    if tool_roles:
-                        meta["tool_roles"] = tool_roles
-                    if descope_scopes:
-                        meta["descope_scopes"] = descope_scopes
-                    config["metadata"] = meta
+                        app_name = payload.get("name") or payload.get("mcpCommand") or title
+                        app_desc = description or app_name
+                        created = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: dapi.create_inbound_app(app_name, app_desc, scopes_payload)
+                        )
+                        inbound_meta = {
+                            "id": (created or {}).get("id"),
+                            "clientId": (created or {}).get("clientId"),
+                            "cleartext": (created or {}).get("cleartext"),
+                        }
+                        meta["inbound_app"] = inbound_meta
+                        config["metadata"] = meta
                 except Exception as e:
-                    print(f"Warning: Descope scope setup error: {e}")
+                    print(f"Warning: DCR inbound app creation failed: {e}")
 
                 saved = await self.db_manager.create_mcp(
                     name=payload.get("name") or payload.get("mcpCommand"),
@@ -281,37 +288,42 @@ class MCPEndpoints:
             cfg = (mcp.get('config') or {})
             meta = (cfg.get('metadata') or {})
             tools = (cfg.get('tools') or [])
-            scope_names = (meta.get('descope_scopes') or {})
-            tool_roles = dict(meta.get('tool_roles') or {})
+            inbound = (meta.get('inbound_app') or {})
+            inbound_app_id = inbound.get('id')
+            if not inbound_app_id:
+                return {"success": False, "message": "Inbound app not found for MCP"}
 
-            dapi = DescopeAPI()
+            # Build scopes (per tool) based on desired role mapping
             scopes_payload = []
+            tool_roles = dict(meta.get('tool_roles') or {})
             for t in tools:
                 tname = (t or {}).get('name')
                 if not tname:
                     continue
-                desired_role_name = (role_map or {}).get(tname)
-                if not desired_role_name:
+                desired_role = (role_map or {}).get(tname)
+                if not desired_role:
                     continue
-                scope_name = scope_names.get(tname)
-                if not scope_name:
-                    scope_name = DescopeAPI.build_scope_name(user_id, mcp.get('name') or '', tname)
-                    scope_names[tname] = scope_name
-                tool_roles[tname] = desired_role_name
+                desc = (t or {}).get('description') or f"Scope for {tname}"
+                # values rule: premium -> ["premium"]; free -> ["free","premium"]
+                values = ["premium"] if desired_role == "premium" else ["free", "premium"]
+                tool_roles[tname] = desired_role
                 scopes_payload.append({
-                    "name": scope_name,
-                    "description": (t or {}).get('description') or f"Scope for {tname}",
-                    "optional": False,
-                    "values": [desired_role_name],
+                    "name": tname,
+                    "description": desc,
+                    "optional": True,
+                    "values": values,
                 })
 
             if scopes_payload:
+                dapi = DescopeAPI()
                 try:
-                    await asyncio.get_event_loop().run_in_executor(None, lambda: dapi.ensure_scopes(scopes_payload))
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: dapi.ensure_scopes_for_app(inbound_app_id, scopes_payload)
+                    )
                 except Exception as de:
                     return {"success": False, "message": f"Failed to patch Descope scopes: {de}"}
 
-            updated = await self.db_manager.update_mcp_metadata_by_id(mcp_id, {"tool_roles": tool_roles, "descope_scopes": scope_names})
+            updated = await self.db_manager.update_mcp_metadata_by_id(mcp_id, {"tool_roles": tool_roles})
             if not updated:
                 return {"success": False, "message": "Failed to update MCP metadata"}
             return {"success": True, "mcp": updated}
@@ -400,6 +412,23 @@ class MCPEndpoints:
         except Exception as e:
             print(f"Error getting MCPs: {e}")
             return {"success": False, "message": f"Error getting MCPs: {str(e)}"}
+
+    async def get_inbound_config(self, mcp_id: str) -> Dict[str, Any]:
+        """Return per-MCP inbound OAuth config (clientId and scopes to request)."""
+        try:
+            mcp = await self.db_manager.get_mcp_by_id(mcp_id)
+            if not mcp:
+                return {"success": False, "message": "MCP not found"}
+            cfg = (mcp.get("config") or {})
+            meta = (cfg.get("metadata") or {})
+            inbound = (meta.get("inbound_app") or {})
+            client_id = inbound.get("clientId")
+            # Build scopes: include full_access plus tool names when available
+            tool_names = [ (t or {}).get("name") for t in (cfg.get("tools") or []) if (t or {}).get("name") ]
+            scopes = ["full_access"] + (tool_names or [])
+            return {"success": True, "clientId": client_id, "scopes": scopes}
+        except Exception as e:
+            return {"success": False, "message": f"Failed to get inbound config: {e}"}
 
     async def set_user_membership_role(self, role: str, auth_data: Dict[str, Any]) -> Dict[str, Any]:
         """Set the current user's role to one of ['free', 'premium'] using Descope management API."""
@@ -524,6 +553,7 @@ class MCPEndpoints:
         try:
             user_id = auth_data['user_id'] if auth_data else None
             sandbox_info = await self.sandbox_manager.get_sandbox_info(chat_id)
+            print(f"Toggle MCP {mcp_id} enabled={enabled} for chat {chat_id} user {user_id}, sandbox: {sandbox_info}")
             if not sandbox_info or not sandbox_info.url:
                 return {"success": False, "message": "No active sandbox found"}
 
@@ -552,6 +582,24 @@ class MCPEndpoints:
             }
 
             sandbox_url = sandbox_info.url
+            # Build allowed_tools based on inbound access token scopes
+            allowed_tools: List[str] = []
+            try:
+                client_row = await self.db_manager.get_client_mcp(user_id, mcp_id) if user_id else None
+                token = (client_row or {}).get("access_token")
+                tool_names = [ (t or {}).get("name") for t in (base_cfg.get("tools") or []) if (t or {}).get("name") ]
+                if token and tool_names:
+                    claims = jwt.decode(token, options={"verify_signature": False})
+                    scopes = set((claims.get("scope") or "").split())
+                    if "full_access" in scopes:
+                        allowed_tools = tool_names
+                    else:
+                        allowed_tools = [t for t in tool_names if t in scopes]
+                    print(f"Allowed tools for MCP {mcp_id} user {user_id}: {allowed_tools}")
+            except Exception:
+                # On any error, fall back to empty (no extra filter) and let chatbot register all
+                allowed_tools = []
+
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     f"{sandbox_url}/toggle-mcp",
@@ -560,7 +608,7 @@ class MCPEndpoints:
                         "enabled": enabled,
                         "config": (mcp_config if enabled else None),
                         "slug": (mcp_row.get("name") or None),
-                        "tool_roles": ((base_cfg.get("metadata") or {}).get("tool_roles") or None),
+                        **({"allowed_tools": allowed_tools} if allowed_tools else {}),
                     },
                     headers={"Content-Type": "application/json"},
                 )
