@@ -68,7 +68,11 @@ app = FastAPI(title="Sandbox Orchestrator API", version="1.0.0")
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this properly for production
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "https://fleet-frontend-55yk.onrender.com"
+    ],  # Allow development, staging, and production origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
