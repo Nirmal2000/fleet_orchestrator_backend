@@ -1,5 +1,7 @@
 # Fleet Sandbox Orchestrator
 
+Youtube - https://youtu.be/0socQ2D_6xU
+
 ## Section 1: What is Fleet?
 
 Fleet is an AI-powered platform that enables seamless interaction with AI assistants through secure, isolated sandbox environments integrated with Model Context Protocol (MCP) tools. It leverages Descope for brief authentication management, including sign-in and login flows, ensuring users can securely access the platform. Fleet supports inbound MCP apps for receiving external data and requests, as well as outbound integrations for connecting to third-party services, allowing flexible data flow and tool interoperability. Users have the ability to select specific tools and functions to run within their chat sessions, tailored to their needs. Role-Based Access Control (RBAC) is implemented for MCP tools, restricting access based on user tiers such as free or premium, ensuring appropriate resource allocation. Additionally, Fleet uses Supabase to sign Descope user IDs, enabling authenticated calls to the database for secure data persistence and management.
